@@ -1,0 +1,10 @@
+[3] | Projekt | 30.6.2026 | otestovať pilotu verziu aplikácie Otestovať pilotu verziu aplikácie 
+[1] | Zdravie | 12.6.2026 | objednať sa na preventívnu prehliadku
+[2] | Poplatky | 17.6.2026 | zaplatiť za smeti
+[2] | Poplatky | 17.6.2026 | zaplatiť PZP za auto
+[2] | Poplatky | 17.6.2026 | zaplatiť parkovanie za auto
+[1]  |  Dovolenka  |  8.6.2026  |  on-line checking hotel[1]  |  [X]
+| 10.06.2026 | kaderníčka
+[1] | Krása | 10.06.2026 | Kaderníčka 14.00 hod. | [X]
+[2] | Dovolenka | 20.08.2026 | naplánovať výlet Norimberg
+[1] | Práca | 07.06.2026 | zadať HO v systéme | [X]
