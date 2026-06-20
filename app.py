@@ -55,7 +55,6 @@ def ensure_headers():
     if not values:
         worksheet.append_row(HEADERS, value_input_option="USER_ENTERED")
     elif values[0] != HEADERS:
-        # ak je sheet prázdny alebo iný formát, ponecháme existujúce dáta bez prepisu
         pass
 
 ensure_headers()
@@ -95,8 +94,10 @@ def prepisat_vsetko(rows):
             if len(r) < 6:
                 r = r + [""] * (6 - len(r))
             worksheet.append_row(r[:6], value_input_option="USER_ENTERED")
+        return True
     except Exception as e:
         st.error(f"Chyba pri prepisovaní Google Sheets: {e}")
+        return False
 
 # ----------------------------
 # NAČÍTANIE DÁT
@@ -107,15 +108,6 @@ vsetky_riadky = nacitat_poznamky()
 # BOČNÝ PANEL
 # ----------------------------
 st.sidebar.header("🔍 Filtrovanie úloh")
-
-def get_priorita_display(value):
-    if value == "1":
-        return "🔴 Priorita 1"
-    if value == "2":
-        return "🟡 Priorita 2"
-    if value == "3":
-        return "🟢 Priorita 3"
-    return value
 
 kategorie_set = sorted(list(set([r[3] for r in vsetky_riadky if len(r) > 3 and r[3]])))
 kategorie = ["Všetky"] + kategorie_set
@@ -170,7 +162,9 @@ if client:
             termin = casti[2]
             kategoria = casti[3]
 
-        zapisat_riadok([text_ulohy, priorita, termin, kategoria, "[ ]", "0"])
+        ok = zapisat_riadok([text_ulohy, priorita, termin, kategoria, "[ ]", "0"])
+        if ok:
+            st.success("Poznámka zapísaná do Google Sheets.")
         st.rerun()
 
 # ----------------------------
@@ -184,7 +178,9 @@ with st.form("nova_uloha", clear_on_submit=True):
     kat = st.text_input("Kategória")
 
     if st.form_submit_button("Uložiť"):
-        zapisat_riadok([t, p, d.strftime("%d.%m.%Y"), kat or "Všeobecné", "[ ]", "0"])
+        ok = zapisat_riadok([t, p, d.strftime("%d.%m.%Y"), kat or "Všeobecné", "[ ]", "0"])
+        if ok:
+            st.success("Poznámka zapísaná do Google Sheets.")
         st.rerun()
 
 # ----------------------------
@@ -208,4 +204,138 @@ mesiace_sk = {
 aktivne_ulohy = []
 archivovane_ulohy = []
 
-for index
+for index, r in enumerate(vsetky_riadky):
+    if len(r) < 6:
+        r = r + [""] * (6 - len(r))
+    text_ulohy, priorita, termin, kategoria, stav, archiv = r[:6]
+
+    if archiv == "1":
+        archivovane_ulohy.append((index, r))
+    else:
+        aktivne_ulohy.append((index, r))
+
+def vykresli_riadok(index, r):
+    text_ulohy, priorita, termin, kategoria, stav, archiv = r[:6]
+    je_splnena = (stav == "[X]")
+
+    priorita_ikona = "🔴" if priorita == "1" else "🟡" if priorita == "2" else "🟢"
+
+    try:
+        task_date = datetime.datetime.strptime(termin, "%d.%m.%Y").date()
+        varovanie = "⚠️ [PO TERMÍNE!] " if task_date < dnes and not je_splnena else ""
+    except:
+        varovanie = ""
+
+    if je_splnena:
+        label_text = f"~~{priorita_ikona} {text_ulohy} ({termin}) - {kategoria}~~"
+    else:
+        label_text = f"{priorita_ikona} {varovanie}**{text_ulohy}** ({termin}) - *{kategoria}*"
+
+    col_check, col_edit, col_arch = st.columns([0.75, 0.12, 0.12])
+
+    with col_check:
+        novy_st = st.checkbox(label_text, value=je_splnena, key=f"check_{index}")
+        if novy_st != je_splnena:
+            vsetky_riadky[index][4] = "[X]" if novy_st else "[ ]"
+            ok = prepisat_vsetko(vsetky_riadky)
+            if not ok:
+                st.error("Prepis Google Sheets zlyhal.")
+            st.rerun()
+
+    with col_edit:
+        if st.button("✏️", key=f"edit_btn_{index}"):
+            st.session_state[f"editing_{index}"] = not st.session_state.get(f"editing_{index}", False)
+            st.rerun()
+
+    with col_arch:
+        if st.button("📦", key=f"arch_btn_{index}"):
+            vsetky_riadky[index][5] = "1"
+            ok = prepisat_vsetko(vsetky_riadky)
+            if not ok:
+                st.error("Prepis Google Sheets zlyhal.")
+            st.rerun()
+
+    if st.session_state.get(f"editing_{index}", False):
+        novy_text = st.text_input("Uprav text a stlač Enter:", value=text_ulohy, key=f"input_{index}")
+        if novy_text != text_ulohy:
+            vsetky_riadky[index][0] = novy_text
+            ok = prepisat_vsetko(vsetky_riadky)
+            if not ok:
+                st.error("Prepis Google Sheets zlyhal.")
+            st.session_state[f"editing_{index}"] = False
+            st.rerun()
+
+# filtrovanie
+filtrovane_ulohy = []
+for index, r in aktivne_ulohy:
+    text_ulohy, priorita, termin, kategoria, stav, archiv = r[:6]
+
+    try:
+        datum_dt = datetime.datetime.strptime(termin, "%d.%m.%Y").date()
+    except:
+        continue
+
+    if filter_priorita != "Všetky":
+        vybrate_cislo = filter_priorita.split()[-1]
+        if vybrate_cislo != priorita:
+            continue
+
+    if filter_kategoria != "Všetky" and kategoria != filter_kategoria:
+        continue
+
+    if f_cas == "Len na dnes" and datum_dt != dnes:
+        continue
+    if f_cas == "Tento týždeň" and not (dnes <= datum_dt <= dnes + datetime.timedelta(days=7)):
+        continue
+    if f_cas == "Tento mesiac po týždňoch" and not (datum_dt.year == dnes.year and datum_dt.month == dnes.month):
+        continue
+    if f_cas == "Tento rok po mesiacoch" and datum_dt.year != dnes.year:
+        continue
+
+    filtrovane_ulohy.append((index, r))
+
+if f_cas in ["Všetko", "Len na dnes", "Tento týždeň"]:
+    for index, r in filtrovane_ulohy:
+        vykresli_riadok(index, r)
+
+elif f_cas == "Tento mesiac po týždňoch":
+    tyzdne = {}
+    for index, r in filtrovane_ulohy:
+        datum_dt = datetime.datetime.strptime(r[2], "%d.%m.%Y").date()
+        cislo_tyzdna = datum_dt.isocalendar()[1]
+        tyzdne.setdefault(cislo_tyzdna, []).append((index, r))
+
+    for t_cislo in sorted(tyzdne.keys()):
+        st.markdown(f"### 📅 {t_cislo}. Týždeň v roku")
+        for index, r in tyzdne[t_cislo]:
+            vykresli_riadok(index, r)
+
+elif f_cas == "Tento rok po mesiacoch":
+    mesiace = {}
+    for index, r in filtrovane_ulohy:
+        datum_dt = datetime.datetime.strptime(r[2], "%d.%m.%Y").date()
+        cislo_mesiaca = datum_dt.month
+        mesiace.setdefault(cislo_mesiaca, []).append((index, r))
+
+    for m_cislo in sorted(mesiace.keys()):
+        nazov_mesiaca = mesiace_sk.get(m_cislo, f"{m_cislo}. Mesiac")
+        st.markdown(f"### 🗓️ {nazov_mesiaca}")
+        for index, r in mesiace[m_cislo]:
+            vykresli_riadok(index, r)
+
+# ----------------------------
+# ARCHÍV
+# ----------------------------
+st.markdown("---")
+with st.expander("📦 Archivované úlohy (História)"):
+    if not archivovane_ulohy:
+        st.write("Archív je prázdny.")
+    for index, r in archivovane_ulohy:
+        text_ulohy, priorita, termin, kategoria, stav, archiv = r[:6]
+        st.write(f"📁 ~~[{priorita}] {text_ulohy} ({termin}) - {kategoria}~~")
+        if st.button("⏪ Obnoviť z archívu", key=f"restore_{index}"):
+            vsetky_riadky[index][5] = "0"
+            ok = prepisat_vsetko(vsetky_riadky)
+            if not ok:
+                st.error("Prepis Google Sheets zlyhal.")
+            st.rerun()
