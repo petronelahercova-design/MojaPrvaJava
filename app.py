@@ -1,15 +1,15 @@
 import streamlit as st
 import datetime
 import os
+import gspread
+from google.oauth2.service_account import Credentials
 from openai import OpenAI
 from streamlit_mic_recorder import mic_recorder
 from dotenv import load_dotenv
 
-# Načítanie API kľúča
-load_dotenv()
-API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=API_KEY) if API_KEY else None
-
+# ----------------------------
+# KONFIGURÁCIA
+# ----------------------------
 st.set_page_config(page_title="Biznis Zápisník", page_icon="📝", layout="centered")
 
 st.markdown("""
@@ -21,104 +21,228 @@ st.markdown("""
 st.title("📝 Môj Inteligentný Biznis Zápisník")
 st.markdown("---")
 
+# ----------------------------
+# OPENAI KĽÚČ
+# ----------------------------
+load_dotenv()
+API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=API_KEY) if API_KEY else None
+
+# ----------------------------
+# GOOGLE SHEETS
+# ----------------------------
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
+SHEET_NAME = "Harok1"
+
+def get_gsheet_client():
+    creds_dict = st.secrets["gcp_service_account"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return gspread.authorize(creds)
+
+gs_client = get_gsheet_client()
+spreadsheet = gs_client.open_by_key(SPREADSHEET_ID)
+worksheet = spreadsheet.worksheet(SHEET_NAME)
+
+HEADERS = ["text", "priorita", "termín", "kategória", "stav", "archív"]
+
+def ensure_headers():
+    values = worksheet.get_all_values()
+    if not values:
+        worksheet.append_row(HEADERS, value_input_option="USER_ENTERED")
+    elif values[0] != HEADERS:
+        # ak je sheet prázdny alebo iný formát, ponecháme existujúce dáta bez prepisu
+        pass
+
+ensure_headers()
+
 def nacitat_poznamky():
     try:
-        with open("moje_poznamky.txt", "r", encoding="utf-8") as f: return f.readlines()
-    except FileNotFoundError: return []
+        values = worksheet.get_all_values()
+        if not values:
+            return []
+        if values[0] == HEADERS:
+            values = values[1:]
+        rows = []
+        for r in values:
+            if len(r) < 6:
+                r = r + [""] * (6 - len(r))
+            rows.append(r[:6])
+        return rows
+    except Exception as e:
+        st.error(f"Chyba pri načítaní z Google Sheets: {e}")
+        return []
 
-def zapisat_vsetky_riadky(riadky):
-    with open("moje_poznamky.txt", "w", encoding="utf-8") as f: f.writelines(riadky)
+def zapisat_riadok(row):
+    try:
+        if len(row) < 6:
+            row = row + [""] * (6 - len(row))
+        worksheet.append_row(row[:6], value_input_option="USER_ENTERED")
+        return True
+    except Exception as e:
+        st.error(f"Chyba pri zápise do Google Sheets: {e}")
+        return False
 
+def prepisat_vsetko(rows):
+    try:
+        worksheet.clear()
+        worksheet.append_row(HEADERS, value_input_option="USER_ENTERED")
+        for r in rows:
+            if len(r) < 6:
+                r = r + [""] * (6 - len(r))
+            worksheet.append_row(r[:6], value_input_option="USER_ENTERED")
+    except Exception as e:
+        st.error(f"Chyba pri prepisovaní Google Sheets: {e}")
+
+# ----------------------------
+# NAČÍTANIE DÁT
+# ----------------------------
 vsetky_riadky = nacitat_poznamky()
 
-# Bočný panel - len priority a kategórie
+# ----------------------------
+# BOČNÝ PANEL
+# ----------------------------
 st.sidebar.header("🔍 Filtrovanie úloh")
+
+def get_priorita_display(value):
+    if value == "1":
+        return "🔴 Priorita 1"
+    if value == "2":
+        return "🟡 Priorita 2"
+    if value == "3":
+        return "🟢 Priorita 3"
+    return value
+
+kategorie_set = sorted(list(set([r[3] for r in vsetky_riadky if len(r) > 3 and r[3]])))
+kategorie = ["Všetky"] + kategorie_set
+
 filter_priorita = st.sidebar.selectbox("Vyber prioritu:", ["Všetky", "🔴 Priorita 1", "🟡 Priorita 2", "🟢 Priorita 3"])
-kategorie = ["Všetky"] + sorted(list(set([r.split("|")[1].strip() for r in vsetky_riadky if "|" in r])))
 filter_kategoria = st.sidebar.selectbox("Vyber kategóriu:", kategorie)
 
-# Hlasový asistent
+# ----------------------------
+# HLASOVÝ ASISTENT
+# ----------------------------
 st.subheader("🎙️ Hlasový asistent AI")
+
 if client:
     nahravka = mic_recorder(start_prompt="🎤 Začať", stop_prompt="🛑 Spracovať", key="voice", just_once=True)
     if nahravka:
-        with open("temp.wav", "wb") as f: f.write(nahravka['bytes'])
-        with open("temp.wav", "rb") as f:
-            text = client.audio.transcriptions.create(model="whisper-1", file=f, language="sk").text
+        temp_file = "temp.wav"
+        with open(temp_file, "wb") as f:
+            f.write(nahravka["bytes"])
+
+        with open(temp_file, "rb") as f:
+            text = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                language="sk"
+            ).text
+
         dnes = datetime.date.today().strftime("%d.%m.%Y")
-        prompt = f"Z textu '{text}' urob formát: Priorita(1-3)|Kategória|Termín(DD.MM.RRRR)|Úloha. Dnes: {dnes}."
-        resp = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}])
-        with open("moje_poznamky.txt", "a", encoding="utf-8") as f: f.write(resp.choices[0].message.content.strip() + " | [ ] | 0\n")
+        prompt = (
+            f"Z tejto poznámky vytvor jednu úlohu v presnom formáte: "
+            f"text|priorita|termín|kategória. "
+            f"Text: {text}. Dnešný dátum: {dnes}. "
+            f"Ak chýba priorita, použi 2. Ak chýba termín, použi dnešný dátum. "
+            f"Ak chýba kategória, použi Všeobecné."
+        )
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        obsah = resp.choices[0].message.content.strip()
+        casti = [x.strip() for x in obsah.split("|")]
+
+        if len(casti) < 4:
+            text_ulohy = obsah
+            priorita = "2"
+            termin = dnes
+            kategoria = "Všeobecné"
+        else:
+            text_ulohy = casti[0]
+            priorita = casti[1].replace("Priorita", "").strip()
+            termin = casti[2]
+            kategoria = casti[3]
+
+        zapisat_riadok([text_ulohy, priorita, termin, kategoria, "[ ]", "0"])
         st.rerun()
 
-# Manuálne zadávanie úloh
+# ----------------------------
+# MANUÁLNE ZADÁVANIE
+# ----------------------------
 with st.form("nova_uloha", clear_on_submit=True):
     t = st.text_input("Čo urobiť?")
     c1, c2 = st.columns(2)
     p = c1.selectbox("Priorita", ["1", "2", "3"])
     d = c2.date_input("Termín")
     kat = st.text_input("Kategória")
+
     if st.form_submit_button("Uložiť"):
-        with open("moje_poznamky.txt", "a", encoding="utf-8") as f: 
-            f.write(f"[{p}] | {kat or 'Všeobecné'} | {d.strftime('%d.%m.%Y')} | {t} | [ ] | 0\n")
+        zapisat_riadok([t, p, d.strftime("%d.%m.%Y"), kat or "Všeobecné", "[ ]", "0"])
         st.rerun()
 
-# Dashboard - Rozšírené filtre časového obdobia presne podľa teba
+# ----------------------------
+# DASHBOARD
+# ----------------------------
 st.subheader("🔥 Tvoj aktuálny prehľad úloh")
+
 f_cas = st.segmented_control(
-    "Časové obdobie a formát:", 
-    ["Všetko", "Len na dnes", "Tento týždeň", "Tento mesiac po týždňoch", "Tento rok po mesiacoch"], 
+    "Časové obdobie a formát:",
+    ["Všetko", "Len na dnes", "Tento týždeň", "Tento mesiac po týždňoch", "Tento rok po mesiacoch"],
     default="Všetko"
 )
 
-zmena_vykonana = False
 dnes = datetime.date.today()
 
-# Názvy mesiacov pre pekné slovenské zobrazenie
 mesiace_sk = {
     1: "Január", 2: "Február", 3: "Marec", 4: "Apríl", 5: "Máj", 6: "Jún",
     7: "Júl", 8: "August", 9: "September", 10: "Október", 11: "November", 12: "December"
 }
 
-# Zoznamy pre rozdelenie aktívnych a archivovaných úloh
 aktivne_ulohy = []
 archivovane_ulohy = []
 
 for index, r in enumerate(vsetky_riadky):
-    if "|" not in r: continue
-    c = [x.strip() for x in r.split("|")]
-    
-    stav = c[4] if len(c) >= 5 else "[ ]"
-    archivovany = c[5] if len(c) >= 6 else "0"
-    
-    if archivovany == "1":
-        archivovane_ulohy.append((index, c, stav))
-    else:
-        aktivne_ulohy.append((index, c, stav))
+    if len(r) < 6:
+        r = r + [""] * (6 - len(r))
+    text_ulohy, priorita, termin, kategoria, stav, archiv = r[:6]
 
-# --- POMOCNÁ FUNKCIA NA VYKRESLENIE RIADKU ÚLOHY ---
-def vykresli_riadok_ulohy(index, c, stav, zmena_vykonana_akcia):
-    je_splnena = (stav == "[X]")
-    priorita_ikona = "🔴" if "1" in c[0] else "🟡" if "2" in c[0] else "🟢"
-    
-    if je_splnena:
-        label_text = f"~~{priorita_ikona} {c[3]} ({c[2]}) - {c[1]}~~"
+    if archiv == "1":
+        archivovane_ulohy.append((index, r))
     else:
-        try:
-            task_date = datetime.datetime.strptime(c[2], "%d.%m.%Y").date()
-            varovanie = "⚠️ [PO TERMÍNE!] " if task_date < dnes else ""
-        except:
-            varovanie = ""
-        label_text = f"{priorita_ikona} {varovanie}**{c[3]}** ({c[2]}) - *{c[1]}*"
+        aktivne_ulohy.append((index, r))
+
+def vykresli_riadok(index, r):
+    text_ulohy, priorita, termin, kategoria, stav, archiv = r[:6]
+    je_splnena = (stav == "[X]")
+
+    priorita_ikona = "🔴" if priorita == "1" else "🟡" if priorita == "2" else "🟢"
+
+    try:
+        task_date = datetime.datetime.strptime(termin, "%d.%m.%Y").date()
+        varovanie = "⚠️ [PO TERMÍNE!] " if task_date < dnes and not je_splnena else ""
+    except:
+        varovanie = ""
+
+    if je_splnena:
+        label_text = f"~~{priorita_ikona} {text_ulohy} ({termin}) - {kategoria}~~"
+    else:
+        label_text = f"{priorita_ikona} {varovanie}**{text_ulohy}** ({termin}) - *{kategoria}*"
 
     col_check, col_edit, col_arch = st.columns([0.75, 0.12, 0.12])
-    
+
     with col_check:
         novy_st = st.checkbox(label_text, value=je_splnena, key=f"check_{index}")
         if novy_st != je_splnena:
-            c5_val = '1' if len(c) >= 6 else '0'
-            vsetky_riadky[index] = f"{c[0]} | {c[1]} | {c[2]} | {c[3]} | {'[X]' if novy_st else '[ ]'} | {c5_val}\n"
-            zmena_vykonana_akcia = True
+            vsetky_riadky[index][4] = "[X]" if novy_st else "[ ]"
+            prepisat_vsetko(vsetky_riadky)
+            st.rerun()
 
     with col_edit:
         if st.button("✏️", key=f"edit_btn_{index}"):
@@ -127,91 +251,87 @@ def vykresli_riadok_ulohy(index, c, stav, zmena_vykonana_akcia):
 
     with col_arch:
         if st.button("📦", key=f"arch_btn_{index}"):
-            vsetky_riadky[index] = f"{c[0]} | {c[1]} | {c[2]} | {c[3]} | {stav} | 1\n"
-            zmena_vykonana_akcia = True
+            vsetky_riadky[index][5] = "1"
+            prepisat_vsetko(vsetky_riadky)
+            st.rerun()
 
     if st.session_state.get(f"editing_{index}", False):
-        novy_text = st.text_input("Uprav text a stlač Enter:", value=c[3], key=f"input_{index}")
-        if novy_text != c[3]:
-            c5_val = c[5] if len(c) >= 6 else '0'
-            vsetky_riadky[index] = f"{c[0]} | {c[1]} | {c[2]} | {novy_text} | {stav} | {c5_val}\n"
-            zapisat_vsetky_riadky(vsetky_riadky)
+        novy_text = st.text_input("Uprav text a stlač Enter:", value=text_ulohy, key=f"input_{index}")
+        if novy_text != text_ulohy:
+            vsetky_riadky[index][0] = novy_text
+            prepisat_vsetko(vsetky_riadky)
             st.session_state[f"editing_{index}"] = False
             st.rerun()
-            
-    return zmena_vykonana_akcia
 
-
-# --- FILTROVANIE A TRIEDENIE AKTÍVNYCH ÚLOH ---
+# filtrovanie
 filtrovane_ulohy = []
+for index, r in aktivne_ulohy:
+    text_ulohy, priorita, termin, kategoria, stav, archiv = r[:6]
 
-for index, c, stav in aktivne_ulohy:
     try:
-        datum = datetime.datetime.strptime(c[2], "%d.%m.%Y").date()
-    except ValueError:
+        datum_dt = datetime.datetime.strptime(termin, "%d.%m.%Y").date()
+    except:
         continue
-    
-    # Aplikácia základných filtrov z bočného panela
+
     if filter_priorita != "Všetky":
         vybrate_cislo = filter_priorita.split()[-1]
-        if vybrate_cislo not in c[0]: continue
-    if filter_kategoria != "Všetky" and c[1] != filter_kategoria: continue
-    
-    # Aplikácia časových filtrov z dashboardu
-    if f_cas == "Len na dnes" and datum != dnes: continue
-    if f_cas == "Tento týždeň" and not (dnes <= datum <= dnes + datetime.timedelta(days=7)): continue
-    if f_cas == "Tento mesiac po týždňoch" and not (datum.year == dnes.year and datum.month == dnes.month): continue
-    if f_cas == "Tento rok po mesiacoch" and datum.year != dnes.year: continue
-    
-    filtrovane_ulohy.append((index, c, stav, datum))
+        if vybrate_cislo != priorita:
+            continue
 
+    if filter_kategoria != "Všetky" and kategoria != filter_kategoria:
+        continue
 
-# --- SAMOTNÉ ZOBRAZENIE PODĽA VYBRATÉHO FORMÁTU ---
+    if f_cas == "Len na dnes" and datum_dt != dnes:
+        continue
+    if f_cas == "Tento týždeň" and not (dnes <= datum_dt <= dnes + datetime.timedelta(days=7)):
+        continue
+    if f_cas == "Tento mesiac po týždňoch" and not (datum_dt.year == dnes.year and datum_dt.month == dnes.month):
+        continue
+    if f_cas == "Tento rok po mesiacoch" and datum_dt.year != dnes.year:
+        continue
+
+    filtrovane_ulohy.append((index, r))
 
 if f_cas in ["Všetko", "Len na dnes", "Tento týždeň"]:
-    # Klasické zobrazenie pod sebou bez špeciálneho delenia
-    for index, c, stav, datum in filtrovane_ulohy:
-        zmena_vykonana = vykresli_riadok_ulohy(index, c, stav, zmena_vykonana)
+    for index, r in filtrovane_ulohy:
+        vykresli_riadok(index, r)
 
 elif f_cas == "Tento mesiac po týždňoch":
-    # Zoskupíme úlohy podľa kalendárneho týždňa
     tyzdne = {}
-    for polozka in filtrovane_ulohy:
-        # .isocalendar()[1] vráti číslo týždňa v roku
-        cislo_tyzdna = polozka[3].isocalendar()[1]
-        tyzdne.setdefault(cislo_tyzdna, []).append(polozka)
-        
+    for index, r in filtrovane_ulohy:
+        datum_dt = datetime.datetime.strptime(r[2], "%d.%m.%Y").date()
+        cislo_tyzdna = datum_dt.isocalendar()[1]
+        tyzdne.setdefault(cislo_tyzdna, []).append((index, r))
+
     for t_cislo in sorted(tyzdne.keys()):
         st.markdown(f"### 📅 {t_cislo}. Týždeň v roku")
-        for index, c, stav, datum in tyzdne[t_cislo]:
-            zmena_vykonana = vykresli_riadok_ulohy(index, c, stav, zmena_vykonana)
+        for index, r in tyzdne[t_cislo]:
+            vykresli_riadok(index, r)
 
 elif f_cas == "Tento rok po mesiacoch":
-    # Zoskupíme úlohy podľa mesiacov
     mesiace = {}
-    for polozka in filtrovane_ulohy:
-        cislo_mesiaca = polozka[3].month
-        mesiace.setdefault(cislo_mesiaca, []).append(polozka)
-        
+    for index, r in filtrovane_ulohy:
+        datum_dt = datetime.datetime.strptime(r[2], "%d.%m.%Y").date()
+        cislo_mesiaca = datum_dt.month
+        mesiace.setdefault(cislo_mesiaca, []).append((index, r))
+
     for m_cislo in sorted(mesiace.keys()):
         nazov_mesiaca = mesiace_sk.get(m_cislo, f"{m_cislo}. Mesiac")
         st.markdown(f"### 🗓️ {nazov_mesiaca}")
-        for index, c, stav, datum in mesiace[m_cislo]:
-            zmena_vykonana = vykresli_riadok_ulohy(index, c, stav, zmena_vykonana)
+        for index, r in mesiace[m_cislo]:
+            vykresli_riadok(index, r)
 
-
-# --- SEKCIA PRE ARCHÍV NA SPODKU STRÁNKY ---
+# ----------------------------
+# ARCHÍV
+# ----------------------------
 st.markdown("---")
 with st.expander("📦 Archivované úlohy (História)"):
     if not archivovane_ulohy:
         st.write("Archív je prázdny.")
-    for index, c, stav in archivovane_ulohy:
-        st.write(f"📁 ~~[{c[0]}] {c[3]} ({c[2]}) - {c[1]}~~")
+    for index, r in archivovane_ulohy:
+        text_ulohy, priorita, termin, kategoria, stav, archiv = r[:6]
+        st.write(f"📁 ~~[{priorita}] {text_ulohy} ({termin}) - {kategoria}~~")
         if st.button("⏪ Obnoviť z archívu", key=f"restore_{index}"):
-            vsetky_riadky[index] = f"{c[0]} | {c[1]} | {c[2]} | {c[3]} | {stav} | 0\n"
-            zmena_vykonana = True
+            vsetky_riadky[index][5] = "0"
+            prepisat_vsetko(vsetky_riadky)
             st.rerun()
-
-if zmena_vykonana:
-    zapisat_vsetky_riadky(vsetky_riadky)
-    st.rerun()
