@@ -2,3 +2,5 @@ streamlit
 openai
 streamlit-mic-recorder
 python-dotenv
+gspread
+google-auth
