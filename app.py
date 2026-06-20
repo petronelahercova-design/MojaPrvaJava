@@ -105,6 +105,14 @@ def prepisat_vsetko(rows):
 vsetky_riadky = nacitat_poznamky()
 
 # ----------------------------
+# DEBUG INFO
+# ----------------------------
+with st.sidebar.expander("ℹ️ Debug info", expanded=False):
+    st.write("Spreadsheet ID:", SPREADSHEET_ID)
+    st.write("Sheet name:", SHEET_NAME)
+    st.write("Počet načítaných riadkov:", len(vsetky_riadky))
+
+# ----------------------------
 # BOČNÝ PANEL
 # ----------------------------
 st.sidebar.header("🔍 Filtrovanie úloh")
@@ -165,7 +173,8 @@ if client:
         ok = zapisat_riadok([text_ulohy, priorita, termin, kategoria, "[ ]", "0"])
         if ok:
             st.success("Poznámka zapísaná do Google Sheets.")
-        st.rerun()
+        else:
+            st.error("Zápis do Google Sheets zlyhal.")
 
 # ----------------------------
 # MANUÁLNE ZADÁVANIE
@@ -181,7 +190,8 @@ with st.form("nova_uloha", clear_on_submit=True):
         ok = zapisat_riadok([t, p, d.strftime("%d.%m.%Y"), kat or "Všeobecné", "[ ]", "0"])
         if ok:
             st.success("Poznámka zapísaná do Google Sheets.")
-        st.rerun()
+        else:
+            st.error("Zápis do Google Sheets zlyhal.")
 
 # ----------------------------
 # DASHBOARD
@@ -240,7 +250,6 @@ def vykresli_riadok(index, r):
             ok = prepisat_vsetko(vsetky_riadky)
             if not ok:
                 st.error("Prepis Google Sheets zlyhal.")
-            st.rerun()
 
     with col_edit:
         if st.button("✏️", key=f"edit_btn_{index}"):
@@ -253,7 +262,6 @@ def vykresli_riadok(index, r):
             ok = prepisat_vsetko(vsetky_riadky)
             if not ok:
                 st.error("Prepis Google Sheets zlyhal.")
-            st.rerun()
 
     if st.session_state.get(f"editing_{index}", False):
         novy_text = st.text_input("Uprav text a stlač Enter:", value=text_ulohy, key=f"input_{index}")
@@ -263,7 +271,6 @@ def vykresli_riadok(index, r):
             if not ok:
                 st.error("Prepis Google Sheets zlyhal.")
             st.session_state[f"editing_{index}"] = False
-            st.rerun()
 
 # filtrovanie
 filtrovane_ulohy = []
