@@ -81,10 +81,9 @@ def zapisat_riadok(row):
         if len(row) < 6:
             row = row + [""] * (6 - len(row))
         worksheet.append_row(row[:6], value_input_option="USER_ENTERED")
-        return True
+        return True, None
     except Exception as e:
-        st.error(f"Chyba pri zápise do Google Sheets: {e}")
-        return False
+        return False, str(e)
 
 def prepisat_vsetko(rows):
     try:
@@ -94,10 +93,9 @@ def prepisat_vsetko(rows):
             if len(r) < 6:
                 r = r + [""] * (6 - len(r))
             worksheet.append_row(r[:6], value_input_option="USER_ENTERED")
-        return True
+        return True, None
     except Exception as e:
-        st.error(f"Chyba pri prepisovaní Google Sheets: {e}")
-        return False
+        return False, str(e)
 
 # ----------------------------
 # NAČÍTANIE DÁT
@@ -105,12 +103,27 @@ def prepisat_vsetko(rows):
 vsetky_riadky = nacitat_poznamky()
 
 # ----------------------------
-# DEBUG INFO
+# DEBUG / TEST ZÁPISU
 # ----------------------------
-with st.sidebar.expander("ℹ️ Debug info", expanded=False):
-    st.write("Spreadsheet ID:", SPREADSHEET_ID)
-    st.write("Sheet name:", SHEET_NAME)
-    st.write("Počet načítaných riadkov:", len(vsetky_riadky))
+st.sidebar.header("🔧 Debug")
+st.sidebar.write("Načítaných riadkov:", len(vsetky_riadky))
+
+st.markdown("---")
+st.subheader("🧪 Test zápisu do Google Sheets")
+
+if st.button("Zapísať testovací riadok"):
+    ok, err = zapisat_riadok([
+        "TEST",
+        "2",
+        datetime.date.today().strftime("%d.%m.%Y"),
+        "Test",
+        "[ ]",
+        "0"
+    ])
+    if ok:
+        st.success("Testovací riadok zapísaný do Google Sheets.")
+    else:
+        st.error(f"Test zápisu zlyhal: {err}")
 
 # ----------------------------
 # BOČNÝ PANEL
@@ -170,11 +183,11 @@ if client:
             termin = casti[2]
             kategoria = casti[3]
 
-        ok = zapisat_riadok([text_ulohy, priorita, termin, kategoria, "[ ]", "0"])
+        ok, err = zapisat_riadok([text_ulohy, priorita, termin, kategoria, "[ ]", "0"])
         if ok:
             st.success("Poznámka zapísaná do Google Sheets.")
         else:
-            st.error("Zápis do Google Sheets zlyhal.")
+            st.error(f"Zápis do Google Sheets zlyhal: {err}")
 
 # ----------------------------
 # MANUÁLNE ZADÁVANIE
@@ -187,11 +200,11 @@ with st.form("nova_uloha", clear_on_submit=True):
     kat = st.text_input("Kategória")
 
     if st.form_submit_button("Uložiť"):
-        ok = zapisat_riadok([t, p, d.strftime("%d.%m.%Y"), kat or "Všeobecné", "[ ]", "0"])
+        ok, err = zapisat_riadok([t, p, d.strftime("%d.%m.%Y"), kat or "Všeobecné", "[ ]", "0"])
         if ok:
             st.success("Poznámka zapísaná do Google Sheets.")
         else:
-            st.error("Zápis do Google Sheets zlyhal.")
+            st.error(f"Zápis do Google Sheets zlyhal: {err}")
 
 # ----------------------------
 # DASHBOARD
@@ -247,9 +260,9 @@ def vykresli_riadok(index, r):
         novy_st = st.checkbox(label_text, value=je_splnena, key=f"check_{index}")
         if novy_st != je_splnena:
             vsetky_riadky[index][4] = "[X]" if novy_st else "[ ]"
-            ok = prepisat_vsetko(vsetky_riadky)
+            ok, err = prepisat_vsetko(vsetky_riadky)
             if not ok:
-                st.error("Prepis Google Sheets zlyhal.")
+                st.error(f"Prepis Google Sheets zlyhal: {err}")
 
     with col_edit:
         if st.button("✏️", key=f"edit_btn_{index}"):
@@ -259,17 +272,17 @@ def vykresli_riadok(index, r):
     with col_arch:
         if st.button("📦", key=f"arch_btn_{index}"):
             vsetky_riadky[index][5] = "1"
-            ok = prepisat_vsetko(vsetky_riadky)
+            ok, err = prepisat_vsetko(vsetky_riadky)
             if not ok:
-                st.error("Prepis Google Sheets zlyhal.")
+                st.error(f"Prepis Google Sheets zlyhal: {err}")
 
     if st.session_state.get(f"editing_{index}", False):
         novy_text = st.text_input("Uprav text a stlač Enter:", value=text_ulohy, key=f"input_{index}")
         if novy_text != text_ulohy:
             vsetky_riadky[index][0] = novy_text
-            ok = prepisat_vsetko(vsetky_riadky)
+            ok, err = prepisat_vsetko(vsetky_riadky)
             if not ok:
-                st.error("Prepis Google Sheets zlyhal.")
+                st.error(f"Prepis Google Sheets zlyhal: {err}")
             st.session_state[f"editing_{index}"] = False
 
 # filtrovanie
@@ -342,7 +355,7 @@ with st.expander("📦 Archivované úlohy (História)"):
         st.write(f"📁 ~~[{priorita}] {text_ulohy} ({termin}) - {kategoria}~~")
         if st.button("⏪ Obnoviť z archívu", key=f"restore_{index}"):
             vsetky_riadky[index][5] = "0"
-            ok = prepisat_vsetko(vsetky_riadky)
+            ok, err = prepisat_vsetko(vsetky_riadky)
             if not ok:
-                st.error("Prepis Google Sheets zlyhal.")
+                st.error(f"Prepis Google Sheets zlyhal: {err}")
             st.rerun()
